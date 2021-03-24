@@ -31,10 +31,10 @@ import useSearch from 'jsx/shared/hooks/useSearch'
 import TreeBrowser from './TreeBrowser'
 import {useManageOutcomes} from 'jsx/outcomes/shared/treeBrowser'
 import {useCanvasContext} from 'jsx/outcomes/shared/hooks'
-
-// Mocked data for ManageOutcomesView QA
-// Remove after data is retrieved via GraphQL
-import {outcomeGroup} from './__tests__/mocks'
+import useModal from '../../shared/hooks/useModal'
+import OutcomeMoveModal from './OutcomeMoveModal'
+import useGroupDetail from '../shared/hooks/useGroupDetail'
+import GroupRemoveModal from './GroupRemoveModal'
 
 const NoOutcomesBillboard = ({contextType}) => {
   const isCourse = contextType === 'Course'
@@ -68,6 +68,7 @@ const NoOutcomesBillboard = ({contextType}) => {
 
 const OutcomeManagementPanel = () => {
   const {contextType} = useCanvasContext()
+  const [searchString, onSearchChangeHandler, onSearchClearHandler] = useSearch()
   const [selectedOutcomes, setSelectedOutcomes] = useState({})
   const selected = Object.keys(selectedOutcomes).length
   const onSelectOutcomesHandler = id =>
@@ -76,9 +77,26 @@ const OutcomeManagementPanel = () => {
       prevState[id] ? delete updatedState[id] : (updatedState[id] = true)
       return updatedState
     })
-  const [searchString, onSearchChangeHandler, onSearchClearHandler] = useSearch()
   const noop = () => {}
-  const {error, isLoading, collections, queryCollections, rootId} = useManageOutcomes()
+  const {
+    error,
+    isLoading,
+    collections,
+    queryCollections,
+    rootId,
+    selectedGroupId
+  } = useManageOutcomes()
+  const {loading, group, loadMore} = useGroupDetail(selectedGroupId)
+  
+  const [isMoveGroupModalOpen, openMoveGroupModal, closeMoveGroupModal] = useModal()
+  const [isGroupRemoveModalOpen, openGroupRemoveModal, closeGroupRemoveModal] = useModal()
+  const groupMenuHandler = (_, action) => {
+    if (action === 'move') {
+      openMoveGroupModal()
+    } else if (action === 'remove') {
+      openGroupRemoveModal()
+    }
+  }
 
   if (isLoading) {
     return (
@@ -147,24 +165,41 @@ const OutcomeManagementPanel = () => {
               overflowY="visible"
               overflowX="auto"
             >
-              <View as="div" padding="none none none x-small">
-                {/* space for outcome group display component */}
-                <ManageOutcomesView
-                  outcomeGroup={outcomeGroup}
-                  selectedOutcomes={selectedOutcomes}
-                  searchString={searchString}
-                  onSelectOutcomesHandler={onSelectOutcomesHandler}
-                  onOutcomeGroupMenuHandler={noop}
-                  onOutcomeMenuHandler={noop}
-                  onSearchChangeHandler={onSearchChangeHandler}
-                  onSearchClearHandler={onSearchClearHandler}
-                />
+              <View as="div" padding="x-small none none x-small">
+                {selectedGroupId && (
+                  <ManageOutcomesView
+                    key={selectedGroupId}
+                    outcomeGroup={group}
+                    loading={loading}
+                    selectedOutcomes={selectedOutcomes}
+                    searchString={searchString}
+                    onSelectOutcomesHandler={onSelectOutcomesHandler}
+                    onOutcomeGroupMenuHandler={groupMenuHandler}
+                    onOutcomeMenuHandler={noop}
+                    onSearchChangeHandler={onSearchChangeHandler}
+                    onSearchClearHandler={onSearchClearHandler}
+                    loadMore={loadMore}
+                  />
+                )}
               </View>
             </Flex.Item>
           </Flex>
           <hr />
-          {Object.keys(outcomeGroup.children).length > 0 && (
+          {selectedGroupId && (
             <ManageOutcomesFooter selected={selected} onRemoveHandler={noop} onMoveHandler={noop} />
+          )}
+          <OutcomeMoveModal
+            title={group ? group.title : ''}
+            type="group"
+            isOpen={isMoveGroupModalOpen}
+            onCloseHandler={closeMoveGroupModal}
+          />
+          {selectedGroupId && (
+            <GroupRemoveModal
+              groupId={selectedGroupId}
+              isOpen={isGroupRemoveModalOpen}
+              onCloseHandler={closeGroupRemoveModal}
+            />
           )}
         </>
       )}

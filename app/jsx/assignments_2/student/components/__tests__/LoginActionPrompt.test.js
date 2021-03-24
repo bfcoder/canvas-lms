@@ -17,24 +17,56 @@
  */
 import React from 'react'
 import LoginActionPrompt from '../LoginActionPrompt'
-import {mockAssignment} from '../../mocks'
-import {render, waitForElement, fireEvent} from '@testing-library/react'
+import {render, waitFor, fireEvent} from '@testing-library/react'
 
 describe('LoginActionPrompt', () => {
   it('renders component locked and feedback text labels correctly', async () => {
-    const assignment = await mockAssignment()
-    const {getByText} = render(<LoginActionPrompt assignment={assignment} />)
-    expect(await waitForElement(() => getByText('Submission Locked'))).toBeInTheDocument()
-    expect(await waitForElement(() => getByText('Log in to submit'))).toBeInTheDocument()
+    const {getByText} = render(<LoginActionPrompt />)
+    expect(await waitFor(() => getByText('Submission Locked'))).toBeInTheDocument()
+    expect(await waitFor(() => getByText('Log in to submit'))).toBeInTheDocument()
   })
 
   it('login button redirects towards login page', async () => {
     delete window.location
     window.location = {assign: jest.fn()}
 
-    const assignment = await mockAssignment()
-    const {getByText} = render(<LoginActionPrompt assignment={assignment} />)
-    fireEvent.click(getByText('Log in'))
+    const {getByTestId} = render(<LoginActionPrompt />)
+    fireEvent.click(getByTestId('login-action-button'))
     expect(window.location.assign).toHaveBeenCalledWith('/login')
+  })
+
+  it('displays a message if the course has not started', async () => {
+    const {getByTestId} = render(<LoginActionPrompt enrollmentState="accepted" />)
+    const text = await waitFor(() => getByTestId('login-action-text').textContent)
+    expect(text).toEqual('Course has not started yet')
+  })
+
+  it('displays a message if the student has not accepted their enrollment', async () => {
+    const {getByTestId} = render(<LoginActionPrompt nonAcceptedEnrollment />)
+    const text = await waitFor(() => getByTestId('login-action-text').textContent)
+    expect(text).toEqual('Accept course invitation to participate in this assignment')
+  })
+
+  it('displays a message if the student is not logged in', async () => {
+    const {getByTestId} = render(<LoginActionPrompt />)
+    const text = await waitFor(() => getByTestId('login-action-text').textContent)
+    expect(text).toEqual('Log in to submit')
+  })
+
+  it('does not display a button if the course has not started', async () => {
+    const {queryByTestId} = render(<LoginActionPrompt enrollmentState="accepted" />)
+    expect(queryByTestId('login-action-button')).not.toBeInTheDocument()
+  })
+
+  it('displays an invitation button if the student has not accepted their enrollment', async () => {
+    const {getByTestId} = render(<LoginActionPrompt nonAcceptedEnrollment />)
+    const text = await waitFor(() => getByTestId('login-action-button').textContent)
+    expect(text).toEqual('Accept course invitation')
+  })
+
+  it('displays a login button if the student is not logged in', async () => {
+    const {getByTestId} = render(<LoginActionPrompt />)
+    const text = await waitFor(() => getByTestId('login-action-button').textContent)
+    expect(text).toEqual('Log in')
   })
 })

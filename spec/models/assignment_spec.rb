@@ -3160,6 +3160,17 @@ describe Assignment do
       submission = @a.submit_homework(@user)
       expect(submission.lti_user_id).to eq @user.lti_context_id
     end
+
+    it "sets the submission's `resource_link_lookup_uuid`" do
+      setup_assignment_without_submission
+      resource_link_lookup_uuid = SecureRandom.uuid
+
+      submission = @a.submit_homework(@user)
+      expect(submission.resource_link_lookup_uuid).to be_nil
+
+      submission = @a.submit_homework(@user, resource_link_lookup_uuid: resource_link_lookup_uuid)
+      expect(submission.resource_link_lookup_uuid).to eq resource_link_lookup_uuid
+    end
   end
 
   describe "muting" do
@@ -4863,6 +4874,30 @@ describe Assignment do
       @a.quiz_lti! && @a.save!
       expect(@a.reload.quiz).to be nil
       expect(@a.submission_types).to eq 'external_tool'
+    end
+
+    context 'when assignment is created with inconsistent params' do
+      before do
+        @a.peer_reviews = true
+        @a.peer_review_count = 3
+        @a.peer_reviews_due_at = Time.zone.now
+        @a.peer_reviews_assigned = true
+        @a.automatic_peer_reviews = true
+        @a.anonymous_peer_reviews = true
+        @a.intra_group_peer_reviews = true
+        @a.save!
+      end
+
+      it "fixes inconsistent attributes" do
+        @a.quiz_lti! && @a.save!
+        expect(@a.reload.peer_reviews).to be_falsey
+        expect(@a.peer_review_count).to eq 0
+        expect(@a.peer_reviews_due_at).to be_nil
+        expect(@a.peer_reviews_assigned).to be_falsey
+        expect(@a.automatic_peer_reviews).to be_falsey
+        expect(@a.anonymous_peer_reviews).to be_falsey
+        expect(@a.intra_group_peer_reviews).to be_falsey
+      end
     end
   end
 
@@ -9010,7 +9045,7 @@ describe Assignment do
         it_behaves_like 'line item and resource link existence check'
         it_behaves_like 'assignment to line item attribute sync check'
 
-        it 'change the `custom` attribute at resource link when it is informed' do
+        it 'change the `custom` attribute at resource link when it is given' do
           assignment.lti_resource_link_custom_params = nil
           assignment.save!
           assignment.reload
@@ -9040,6 +9075,18 @@ describe Assignment do
           resource_link = assignment.line_items.first.resource_link
 
           expect(resource_link.custom).to eq new_custom_params.with_indifferent_access
+        end
+
+        it 'change the `lookup_uuid` attribute at resource link when it is given' do
+          lookup_uuid = '3d719897-4274-44ab-aff2-2fbd3c9d2977'
+
+          assignment.lti_resource_link_lookup_uuid = lookup_uuid
+          assignment.save!
+          assignment.reload
+
+          resource_link = assignment.line_items.first.resource_link
+
+          expect(resource_link.lookup_uuid).to eq lookup_uuid
         end
 
         context 'and no resource link or line item exist' do
@@ -9349,6 +9396,7 @@ describe Assignment do
           assignment.update!(due_at: 1.minute.after(newly_closed_grading_period.start_date))
           expect {
             Assignment.disable_post_to_sis_if_grading_period_closed
+            run_jobs
           }.to change { assignment.reload.post_to_sis }.from(true).to(false)
         end
 
@@ -9357,7 +9405,7 @@ describe Assignment do
           now = Time.zone.now
 
           Timecop.freeze(now) do
-            Assignment.disable_post_to_sis_if_grading_period_closed
+            newly_closed_grading_period.disable_post_to_sis
           end
           expect(assignment.reload.updated_at).to eq now
         end
@@ -9404,6 +9452,12 @@ describe Assignment do
       end
 
       context "with assignment overrides" do
+        it "calls disable_post_to_sis if the grading period is over" do
+          expect_any_instantiation_of(newly_closed_grading_period).to receive(:disable_post_to_sis)
+          Assignment.disable_post_to_sis_if_grading_period_closed
+          run_jobs
+        end
+
         it "sets post_to_sis to false if at least one section has a due date in the closed grading period" do
           course_section = course.course_sections.create!(name: "section")
           assignment.update!(due_at: 1.week.after(newly_closed_grading_period.end_date))
@@ -9414,7 +9468,7 @@ describe Assignment do
           )
 
           expect {
-            Assignment.disable_post_to_sis_if_grading_period_closed
+            newly_closed_grading_period.disable_post_to_sis
           }.to change { assignment.reload.post_to_sis }.from(true).to(false)
         end
 

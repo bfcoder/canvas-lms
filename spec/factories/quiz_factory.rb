@@ -85,6 +85,10 @@ module Factories
     ]
   end
 
+  def test_submission_data
+    [{ points: 0, text: "7051", question_id: 128, correct: false, answer_id: 7051 }]
+  end
+
   def generate_quiz(course)
     quiz = course.quizzes.create(workflow_state: 'available')
     quiz.quiz_questions.create!(question_data: test_quiz_data().first)
@@ -102,7 +106,7 @@ module Factories
     if finished_at.nil?
       qsub.submission_data = {}
     else
-      qsub.submission_data = [{ points: 0, text: "7051", question_id: 128, correct: false, answer_id: 7051 }]
+      qsub.submission_data = test_submission_data
       qsub.score = 0
       qsub.finished_at = finished_at || Time.now.utc
       qsub.workflow_state = 'complete'
@@ -290,6 +294,22 @@ module Factories
       {"exact"=>-4, "comments"=>"", "numerical_answer_type"=>"exact_answer", "margin"=>0.1, "weight"=>100, "text"=>"", "id"=>5450},
       {"numerical_answer_type"=>"precision_answer", "approximate"=>"1.23456e+21", "precision"=>"6", "comments"=>"", "weight"=>100, "text"=>"", "id"=>123}
     ], "question_text"=>"<p>abs(x) = 4</p>", "id" => 1}.with_indifferent_access
+  end
+
+  def numerical_without_precision_question_data
+    {"name"=>"Question",
+      "correct_comments"=>"",
+      "question_type"=>"numerical_question",
+      "assessment_question_id"=>8197062,
+      "neutral_comments"=>"",
+      "incorrect_comments"=>"",
+      "question_name"=>"Question",
+      "points_possible"=>26.2,
+      "answers"=>[
+        {"exact"=>4, "comments"=>"", "numerical_answer_type"=>"exact_answer", "margin"=>0, "weight"=>100, "text"=>"", "id"=>9333},
+      ],
+      "question_text"=>"<p>Numerical without precision answers</p>",
+      "id" => 1}.with_indifferent_access
   end
 
   def calculated_question_data

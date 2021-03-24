@@ -474,7 +474,7 @@ class UsersController < ApplicationController
     clear_crumbs
 
     @show_footer = true
-    @k5_mode = @context.account.feature_enabled?(:canvas_for_elementary)
+    @k5_mode = use_k5?
 
     if request.path =~ %r{\A/dashboard\z}
       return redirect_to(dashboard_url, :status => :moved_permanently)
@@ -483,7 +483,6 @@ class UsersController < ApplicationController
 
     js_env({
       :DASHBOARD_SIDEBAR_URL => dashboard_sidebar_url,
-      :K5_MODE => @k5_mode,
       :PREFERENCES => {
         :dashboard_view => @current_user.dashboard_view(@domain_root_account),
         :hide_dashcard_color_overlays => @current_user.preferences[:hide_dashcard_color_overlays],
@@ -580,11 +579,7 @@ class UsersController < ApplicationController
       end
     end
 
-    if CANVAS_RAILS5_2
-      render :formats => 'html', :layout => false
-    else
-      render formats: :html, layout: false
-    end
+    render formats: :html, layout: false
   end
 
   def toggle_hide_dashcard_color_overlays
@@ -772,12 +767,19 @@ class UsersController < ApplicationController
         @context.manageable_courses(include_concluded).limit(limit)
       @courses += scope.select("courses.*,#{Course.best_unicode_collation_key('name')} AS sort_key").order('sort_key').preload(:enrollment_term).to_a
     end
-    @courses = @courses.sort_by(&:sort_key)[0, limit]
+
+    @courses = @courses.sort_by do |c|
+      [
+        c.enrollment_term.default_term? ? CanvasSort::First : CanvasSort::Last, # Default term first
+        c.enrollment_term.start_at || CanvasSort::First, # Most recent start_at
+        c.sort_key # Alphabetical
+      ]
+    end[0, limit]
 
     @courses = @courses.select { |c| c.grants_right?(@current_user, :read_as_admin) && c.grants_right?(@current_user, :read) }
 
     render :json => @courses.map { |c|
-      { :label => c.name,
+      { :label => c.nickname_for(@current_user),
         :id => c.id,
         :course_code => c.course_code,
         :sis_id => c.sis_source_id,
@@ -2366,7 +2368,12 @@ class UsersController < ApplicationController
 
     # returns the original list in :invited_users (with ids) if successfully added, or in :errored_users if not
     get_context
-    return unless authorized_action(@context, @current_user, [:manage_students, :manage_admin_users])
+    manage_perm = if @context.root_account.feature_enabled? :granular_permissions_manage_users
+      :allow_course_admin_actions
+    else
+      :manage_admin_users
+    end
+    return unless authorized_action(@context, @current_user, [:manage_students, manage_perm])
 
     root_account = context.root_account
     unless root_account.open_registration? || root_account.grants_right?(@current_user, session, :manage_user_logins)
@@ -2969,5 +2976,13 @@ class UsersController < ApplicationController
     else
       raise "Error connecting to recaptcha #{response}"
     end
+  end
+
+  def use_k5?
+    k5_accounts = @domain_root_account.settings[:k5_accounts]
+    return false if k5_accounts.blank?
+
+    @domain_root_account.feature_enabled?(:canvas_for_elementary) &&
+      @current_user.user_account_associations.where(account_id: k5_accounts).exists?
   end
 end

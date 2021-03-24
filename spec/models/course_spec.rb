@@ -1837,11 +1837,7 @@ describe Course, "enroll" do
     @course.enroll_student(@user)
     scope = account.associated_courses.active.select([:id, :name]).eager_load(:teachers).joins(:teachers).where(:enrollments => { :workflow_state => 'active' })
     sql = scope.to_sql
-    if CANVAS_RAILS5_2
-      expect(sql).to match(/"enrollments"\."type" IN \('TeacherEnrollment'\)/)
-    else
-      expect(sql).to match(/"enrollments"\."type" = 'TeacherEnrollment'/)
-    end
+    expect(sql).to match(/"enrollments"\."type" = 'TeacherEnrollment'/)
   end
 end
 
@@ -2574,10 +2570,62 @@ describe Course, "tabs_available" do
       tab_ids = @course.uncached_tabs_available(@teacher, include_hidden_unused: true).map{|t| t[:id] }
       expect(tab_ids).to_not include(Course::TAB_ANNOUNCEMENTS)
     end
+
+    it "should show people tab with granular permissions if hidden" do
+      @course.root_account.enable_feature!(:granular_permissions_manage_users)
+      @course.tab_configuration = [{
+        id: Course::TAB_PEOPLE,
+        label: "People",
+        css_class: 'people',
+        href: :course_users_path,
+        hidden: true
+      }]
+      tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
+      expect(tab_ids).to be_include(Course::TAB_PEOPLE)
+    end
+
+    describe "with canvas_for_elementary feature on" do
+      let(:canvas_for_elem_flag){@course.root_account.feature_enabled?(:canvas_for_elementary)}
+      let(:is_homeroom) {@course.homeroom_course?}
+
+      it 'hides most tabs for homeroom courses' do
+        begin
+          @course.root_account.enable_feature!(:canvas_for_elementary)
+          @course.homeroom_course = true
+          @course.save!
+          tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
+          expect(tab_ids).to eq [Course::TAB_ANNOUNCEMENTS, Course::TAB_PEOPLE, Course::TAB_SETTINGS]
+        ensure
+          @course.root_account.set_feature_flag!(:canvas_for_elementary, :canvas_for_elem_flag ? 'on' : 'off')
+          @course.homeroom_course = is_homeroom
+          @course.save!
+        end
+      end
+
+      it 'hides external tools in nav' do
+        t1 = @course.context_external_tools.create!(
+          :url => "http://example.com/ims/lti",
+          :consumer_key => "asdf",
+          :shared_secret => "hjkl",
+          :name => "external tool 1",
+          :course_navigation => {
+            :text => "blah",
+            :url =>  "http://example.com/ims/lti",
+            :default => false,
+          }
+        )
+        @course.tab_configuration = [{:id => Course::TAB_ANNOUNCEMENTS}, {:id => 'context_external_tool_8'}]
+        @course.root_account.enable_feature!(:canvas_for_elementary)
+        @course.homeroom_course = true
+        @course.save!
+        tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
+        expect(tab_ids).to eq [Course::TAB_ANNOUNCEMENTS, Course::TAB_PEOPLE, Course::TAB_SETTINGS]
+      end
+    end
   end
 
   context "students" do
-    before :once do
+    before :each do
       course_with_student(:active_all => true)
     end
 
@@ -2595,6 +2643,19 @@ describe Course, "tabs_available" do
       tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
       expect(tab_ids).not_to be_include(Course::TAB_SETTINGS)
       expect(tab_ids.length).to be > 0
+    end
+
+    it "should hide people tab with granular permissions if hidden" do
+      @course.root_account.enable_feature!(:granular_permissions_manage_users)
+      @course.tab_configuration = [{
+        id: Course::TAB_PEOPLE,
+        label: "People",
+        css_class: 'people',
+        href: :course_users_path,
+        hidden: true
+      }]
+      tab_ids = @course.tabs_available(@user).map{|t| t[:id] }
+      expect(tab_ids).not_to be_include(Course::TAB_PEOPLE)
     end
 
     it "should show grades tab for students" do
@@ -2717,6 +2778,8 @@ describe Course, "tabs_available" do
       allow(Lti::MessageHandler).to receive(:lti_apps_tabs).and_return([mock_tab])
       expect(@course.tabs_available(nil, :include_external => true)).to include(mock_tab)
     end
+
+    # no spec for student homeroom because students should never navigate to the homeroom course
   end
 
   context "observers" do

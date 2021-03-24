@@ -388,6 +388,40 @@ RSpec.describe ApplicationController do
         expect(user.prefers_no_keyboard_shortcuts?).to be_truthy
       end
     end
+
+    context "canvas for elementary" do
+      let(:course) {create_course}
+      let(:canvas_for_elem_flag) {course.root_account.feature_enabled?(:canvas_for_elementary)}
+
+      before(:each) do
+        controller.instance_variable_set(:@context, course)
+        allow(controller).to receive('api_v1_course_ping_url').and_return({})
+      end
+
+      after(:each) do
+        course.root_account.set_feature_flag!(:canvas_for_elementary, canvas_for_elem_flag ? 'on' : 'off')
+      end
+
+      describe "HOMEROOM_COURSE" do
+        it "is true if course is a homeroom course and canvas_for_elementary flag is on" do
+          course.root_account.enable_feature!(:canvas_for_elementary)
+          course.homeroom_course = true
+          expect(@controller.js_env[:HOMEROOM_COURSE]).to be_truthy
+        end
+
+        it "is false if course is a homeroom course and canvas_for_elementary flag is off" do
+          course.root_account.disable_feature!(:canvas_for_elementary)
+          course.homeroom_course = true
+          expect(@controller.js_env[:HOMEROOM_COURSE]).to be_falsey
+        end
+
+        it "is false if course is not a homeroom course and canvas_for_elementary flag is on" do
+          course.root_account.enable_feature!(:canvas_for_elementary)
+          course.homeroom_course = false
+          expect(@controller.js_env[:HOMEROOM_COURSE]).to be_falsey
+        end
+      end
+    end
   end
 
   describe "clean_return_to" do
@@ -678,7 +712,7 @@ RSpec.describe ApplicationController do
       allow(controller.request).to receive(:xhr?).and_return(0)
       allow(controller.request).to receive(:put?).and_return(true)
       allow(RequestContextGenerator).to receive(:store_interaction_seconds_update).and_return(true)
-      allow(PageView).to receive(:decode_token).and_return(page_view_info)
+      allow(CanvasSecurity::PageViewJwt).to receive(:decode).and_return(page_view_info)
       allow(PageView).to receive(:find_for_update).and_return(page_view)
       expect {controller.send(:add_interaction_seconds)}.not_to raise_error
     end
@@ -1896,6 +1930,36 @@ describe ApplicationController do
         expect(controller.send(:show_student_view_button?)).to be_falsey
       end
     end
+  end
+
+  describe "new math equation handling feature" do
+    let(:root_account) {Account.default}
+    
+    before(:each) do
+      controller.instance_variable_set(:@domain_root_account, root_account)
+    end
+
+    it "should put false in ENV when disabled at site_admin" do
+      Account.site_admin.disable_feature!(:new_math_equation_handling)
+      expect(@controller.use_new_math_equation_handling?).to be_falsey
+      expect(@controller.js_env[:FEATURES][:new_math_equation_handling]).to be_falsey
+    end
+
+    it "should put false in ENV when enabled at site_admin but disabled at the root account" do
+      Account.site_admin.enable_feature!(:new_math_equation_handling)
+      root_account.disable_feature!(:new_math_equation_handling)
+      expect(@controller.use_new_math_equation_handling?).to be_falsey
+      expect(@controller.js_env[:FEATURES][:new_math_equation_handling]).to be_falsey
+    end
+
+    it "should put true in ENV when enabled at site_admin and the root account" do
+      Account.site_admin.enable_feature!(:new_math_equation_handling)
+      root_account.enable_feature!(:new_math_equation_handling)
+      expect(@controller.use_new_math_equation_handling?).to be_truthy
+      expect(@controller.js_env[:FEATURES][:new_math_equation_handling]).to be_truthy
+    end
+
+    
   end
 end
 

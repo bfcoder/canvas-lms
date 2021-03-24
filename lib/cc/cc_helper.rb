@@ -19,6 +19,7 @@
 #
 
 require 'nokogiri'
+require 'nokogumbo'
 
 module CC
 module CCHelper
@@ -48,6 +49,7 @@ module CCHelper
   WEB_LINK = "imswl_xmlv1p1"
   WEBCONTENT = "webcontent"
   BASIC_LTI = 'imsbasiclti_xmlv1p0'
+  BASIC_LTI_1_DOT_3 = 'imsbasiclti_xmlv1p3'
   BLTI_NAMESPACE = "http://www.imsglobal.org/xsd/imsbasiclti_v1p0"
 
   # Common Cartridge 1.2
@@ -97,6 +99,7 @@ module CCHelper
   MEDIA_TRACKS = 'media_tracks.xml'
   ASSIGNMENT_XML = 'assignment.xml'
   EXTERNAL_CONTENT_FOLDER = 'external_content'
+  RESOURCE_LINK_FOLDER = 'lti_resource_links'
 
   def ims_date(date=nil,default=Time.now)
     CCHelper.ims_date(date, default)
@@ -151,20 +154,24 @@ module CCHelper
     [title, body]
   end
 
+  SPECIAL_REFERENCE_REGEX = /(?:\$|%24)[^%$]*(?:\$|%24)/
+  WEB_CONTENT_REFERENCE_REGEX = Regexp.union(Regexp.new(Regexp.escape(CC::CCHelper::WEB_CONTENT_TOKEN)),
+    Regexp.new(Regexp.escape(CGI.escape(CC::CCHelper::WEB_CONTENT_TOKEN))))
+
   def self.map_linked_objects(content)
     linked_objects = []
-    html = Nokogiri::HTML.fragment(content)
+    html = Nokogiri::HTML5.fragment(content)
     html.css('a, img').each do |atag|
       source = atag['href'] || atag['src']
-      next unless source =~ /%24[^%]*%24/
-      if source.include?(CGI.escape(CC::CCHelper::WEB_CONTENT_TOKEN))
-        attachment_key = source.sub(CGI.escape(CC::CCHelper::WEB_CONTENT_TOKEN), '')
+      next unless source =~ SPECIAL_REFERENCE_REGEX
+      if source =~ WEB_CONTENT_REFERENCE_REGEX
+        attachment_key = source.sub(WEB_CONTENT_REFERENCE_REGEX, '')
         attachment_key = attachment_key.split('?').first
         attachment_key = attachment_key.split('/').map {|ak| CGI.unescape(ak)}.join('/')
         linked_objects.push({local_path: attachment_key, type: 'Attachment'})
       else
         type, object_key = source.split('/').last 2
-        if type =~ /%24[^%]*%24/
+        if type =~ SPECIAL_REFERENCE_REGEX
           type = object_key
           object_key = nil
         end
@@ -310,7 +317,7 @@ module CCHelper
       # keep track of found media comments, and translate them into links into the files tree
       # if imported back into canvas, they'll get uploaded to the media server
       # and translated back into media comments
-      doc = Nokogiri::HTML::DocumentFragment.parse(html)
+      doc = Nokogiri::HTML5.fragment(html)
       doc.css('a.instructure_inline_media_comment').each do |anchor|
         next unless anchor['id']
         media_id = anchor['id'].gsub(/^media_comment_/, '')

@@ -207,6 +207,7 @@ class ApplicationController < ActionController::Base
         @js_env[:lolcalize] = true if ENV['LOLCALIZE']
         @js_env[:rce_auto_save_max_age_ms] = Setting.get('rce_auto_save_max_age_ms', 1.day.to_i * 1000).to_i if @js_env[:rce_auto_save]
         @js_env[:FEATURES][:new_math_equation_handling] = use_new_math_equation_handling?
+        @js_env[:HOMEROOM_COURSE] = @context.elementary_homeroom_course? if @context.is_a?(Course)
       end
     end
 
@@ -219,12 +220,13 @@ class ApplicationController < ActionController::Base
   # put feature checks on Account.site_admin and @domain_root_account that we're loading for every page in here
   # so altogether we can get them faster the vast majority of the time
   JS_ENV_SITE_ADMIN_FEATURES = [
-    :cc_in_rce_video_tray, :featured_help_links, :rce_lti_favorites, :rce_pretty_html_editor, :rce_better_file_downloading
+    :cc_in_rce_video_tray, :featured_help_links, :rce_lti_favorites, :rce_pretty_html_editor, :rce_better_file_downloading, :rce_better_file_previewing
   ].freeze
   JS_ENV_ROOT_ACCOUNT_FEATURES = [
     :direct_share, :assignment_bulk_edit, :responsive_awareness, :recent_history,
     :responsive_misc, :product_tours, :module_dnd, :files_dnd, :unpublished_courses,
-    :usage_rights_discussion_topics, :inline_math_everywhere
+    :usage_rights_discussion_topics, :inline_math_everywhere, :granular_permissions_manage_users,
+    :canvas_for_elementary
   ].freeze
   JS_ENV_FEATURES_HASH = Digest::MD5.hexdigest([JS_ENV_SITE_ADMIN_FEATURES + JS_ENV_ROOT_ACCOUNT_FEATURES].sort.join(",")).freeze
   def cached_js_env_account_features
@@ -523,6 +525,16 @@ class ApplicationController < ActionController::Base
     prepend_view_path(path)
   end
 
+  # the way classic quizzes copies question data from the page into the
+  # edit form causes the elements added for a11y to get duplicated
+  # and other misadventures that caused 4 hotfixes in 3 days.
+  # Let's just not use the new math handling there.
+  def use_new_math_equation_handling?
+    @domain_root_account&.feature_enabled?(:new_math_equation_handling) &&
+    !(params[:controller] == "quizzes/quizzes" && params[:action] == "edit") &&
+    params[:controller] != "question_banks"
+  end
+  
   protected
 
   # we track the cost of each request in RequestThrottle in order
@@ -607,7 +619,7 @@ class ApplicationController < ActionController::Base
     Canvas::Apm.annotate_trace(
       Shard.current,
       @domain_root_account,
-      RequestContextGenerator.request_id,
+      RequestContext::Generator.request_id,
       @current_user
     )
   end
@@ -661,7 +673,7 @@ class ApplicationController < ActionController::Base
       headers['X-Frame-Options'] = 'SAMEORIGIN'
     end
     headers['Strict-Transport-Security'] = 'max-age=31536000' if request.ssl?
-    RequestContextGenerator.store_request_meta(request, @context)
+    RequestContext::Generator.store_request_meta(request, @context)
     true
   end
 
@@ -1429,11 +1441,11 @@ class ApplicationController < ActionController::Base
     return unless (request.xhr? || request.put?) && params[:page_view_token] && !updated_fields.empty?
     return unless page_views_enabled?
 
-    RequestContextGenerator.store_interaction_seconds_update(
+    RequestContext::Generator.store_interaction_seconds_update(
       params[:page_view_token],
       updated_fields[:interaction_seconds]
     )
-    page_view_info = PageView.decode_token(params[:page_view_token])
+    page_view_info = CanvasSecurity::PageViewJwt.decode(params[:page_view_token])
     @page_view = PageView.find_for_update(page_view_info[:request_id])
     if @page_view
       if @page_view.id
@@ -1480,7 +1492,7 @@ class ApplicationController < ActionController::Base
       @page_view.account_id = @domain_root_account.id
       @page_view.developer_key_id = @access_token.try(:developer_key_id)
       @page_view.store
-      RequestContextGenerator.store_page_view_meta(@page_view)
+      RequestContext::Generator.store_page_view_meta(@page_view)
     end
   end
 
@@ -1513,7 +1525,7 @@ class ApplicationController < ActionController::Base
     # This causes controller#action from not being set on x-canvas-meta header.
     set_response_headers
 
-    if config.consider_all_requests_local
+    if Rails.application.config.consider_all_requests_local
       rescue_action_locally(exception, level: level)
     else
       rescue_action_in_public(exception, level: level)
@@ -1673,7 +1685,7 @@ class ApplicationController < ActionController::Base
     else
       # this ensures the logging will still happen so you can see backtrace, etc.
       Canvas::Errors.capture(exception, {}, level)
-      super
+      raise exception
     end
   end
 
@@ -2212,16 +2224,6 @@ class ApplicationController < ActionController::Base
       return false
     end
     true
-  end
-
-  # the way classic quizzes copies question data from the page into the
-  # edit form causes the elements added for a11y to get duplicated
-  # and other misadventures that caused 4 hotfixes in 3 days.
-  # Let's just not use the new math handling there.
-  def use_new_math_equation_handling?
-    Account.site_admin.feature_enabled?(:new_math_equation_handling) &&
-    !(params[:controller] == "quizzes/quizzes" && params[:action] == "edit") &&
-    params[:controller] != "question_banks"
   end
 
   def destroy_session

@@ -23,9 +23,10 @@ import 'compiled/jquery.rails_flash_notifications'
 import {CHILD_GROUPS_QUERY} from '../Management/api'
 import {FIND_GROUPS_QUERY} from '../api'
 import {useCanvasContext} from './hooks'
+import useSearch from '../../shared/hooks/useSearch'
 
-const ROOT_ID = 0
-const ACCOUNT_FOLDER_ID = -1
+export const ROOT_ID = 0
+export const ACCOUNT_FOLDER_ID = -1
 
 const defaultStruct = (id, name) => ({
   id,
@@ -68,7 +69,8 @@ const structFromGroup = g => ({
   id: g._id,
   name: g.title,
   descriptor: groupDescriptor(g),
-  collections: []
+  collections: [],
+  outcomesCount: g.outcomesCount
 })
 
 const getCounts = rootGroups => {
@@ -86,6 +88,13 @@ const useTreeBrowser = () => {
   const [collections, setCollections] = useState({[ROOT_ID]: defaultStruct(ROOT_ID)})
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [selectedGroupId, setSelectedGroupId] = useState(null)
+
+  const updateSelectedGroupId = props => {
+    const {id} = props
+    setSelectedGroupId(id)
+    queryCollections(props)
+  }
 
   const queryCollections = ({id}) => {
     if (['loaded', 'loading'].includes(collections[id]?.loadInfo)) {
@@ -129,6 +138,9 @@ const useTreeBrowser = () => {
     collections,
     setCollections,
     queryCollections,
+    selectedGroupId,
+    setSelectedGroupId,
+    updateSelectedGroupId,
     error,
     setError,
     isLoading,
@@ -138,16 +150,22 @@ const useTreeBrowser = () => {
 
 export const useManageOutcomes = () => {
   const {contextId, contextType} = useCanvasContext()
+  const [selectedGroupId, setSelectedGroupId] = useState(null)
   const client = useApolloClient()
   const {
     collections,
     setCollections,
-    queryCollections,
+    queryCollections: treeBrowserQueryCollection,
     error,
     setError,
     isLoading,
     setIsLoading
   } = useTreeBrowser()
+
+  const queryCollections = ({id}) => {
+    setSelectedGroupId(id)
+    treeBrowserQueryCollection({id})
+  }
 
   useEffect(() => {
     client
@@ -181,7 +199,8 @@ export const useManageOutcomes = () => {
     isLoading,
     collections,
     queryCollections,
-    rootId: ROOT_ID
+    rootId: ROOT_ID,
+    selectedGroupId
   }
 }
 
@@ -195,8 +214,21 @@ export const useFindOutcomeModal = open => {
     error,
     setError,
     isLoading,
-    setIsLoading
+    setIsLoading,
+    selectedGroupId,
+    setSelectedGroupId,
+    updateSelectedGroupId
   } = useTreeBrowser()
+  const [searchString, updateSearch, clearSearch] = useSearch()
+
+  const toggleGroupId = props => {
+    if (props?.id !== selectedGroupId) clearSearch()
+    updateSelectedGroupId(props)
+  }
+
+  useEffect(() => {
+    if (!open && selectedGroupId !== null) setSelectedGroupId(null)
+  }, [open, selectedGroupId, setSelectedGroupId])
 
   useEffect(() => {
     if (!isLoading || !open) {
@@ -269,6 +301,11 @@ export const useFindOutcomeModal = open => {
     isLoading,
     collections,
     queryCollections,
-    rootId: ROOT_ID
+    selectedGroupId,
+    toggleGroupId,
+    rootId: ROOT_ID,
+    searchString,
+    updateSearch,
+    clearSearch
   }
 }

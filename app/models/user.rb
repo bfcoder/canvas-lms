@@ -1086,7 +1086,7 @@ class User < ActiveRecord::Base
       # only delete the user's communication channels when the last account is
       # removed (they don't belong to any particular account). they will always
       # be on the user's shard
-      self.communication_channels.each(&:destroy) unless has_other_root_accounts
+      self.communication_channels.unretired.find_each(&:destroy) unless has_other_root_accounts
 
       self.update_account_associations
     end
@@ -2653,15 +2653,25 @@ class User < ActiveRecord::Base
   end
 
   def can_create_enrollment_for?(course, session, type)
-    return false if type == "StudentEnrollment" && MasterCourses::MasterTemplate.is_master_course?(course)
-    if type != "StudentEnrollment" && course.grants_right?(self, session, :manage_admin_users)
-      return true
-    end
-    if course.grants_right?(self, session, :manage_students)
-      if %w{StudentEnrollment ObserverEnrollment}.include?(type) || (type == 'TeacherEnrollment' && course.teacherless?)
+    granular_admin = course.root_account.feature_enabled?(:granular_permissions_manage_users)
+    return false if type == 'StudentEnrollment' && MasterCourses::MasterTemplate.is_master_course?(course)
+    if granular_admin
+      return true if type == 'TeacherEnrollment' && course.grants_right?(self, session, :add_teacher_to_course)
+      return true if type == 'TaEnrollment' && course.grants_right?(self, session, :add_ta_to_course)
+      return true if type == 'DesignerEnrollment' && course.grants_right?(self, session, :add_designer_to_course)
+      return true if type == 'StudentEnrollment' && course.grants_right?(self, session, :add_student_to_course)
+      return true if type == 'ObserverEnrollment' && course.grants_right?(self, session, :add_observer_to_course)
+    else
+      if type != 'StudentEnrollment' && course.grants_right?(self, session, :manage_admin_users)
         return true
       end
+      if course.grants_right?(self, session, :manage_students)
+        if %w{StudentEnrollment ObserverEnrollment}.include?(type) || (type == 'TeacherEnrollment' && course.teacherless?)
+          return true
+        end
+      end
     end
+    false
   end
 
   def can_be_enrolled_in_course?(course)
@@ -2970,11 +2980,12 @@ class User < ActiveRecord::Base
 
   def update_bouncing_channel_message!(channel=nil)
     force_set_bouncing = channel && channel.bouncing? && !channel.imported?
-    set_bouncing = force_set_bouncing || self.communication_channels.unretired.any? { |cc| cc.bouncing? && !cc.imported? }
+    return show_bouncing_channel_message! if force_set_bouncing
 
-    if force_set_bouncing
-      show_bouncing_channel_message!
-    elsif set_bouncing
+    sis_channel_ids = pseudonyms.shard(self).where.not(sis_communication_channel_id: nil).pluck(:sis_communication_channel_id)
+    set_bouncing = communication_channels.unretired.bouncing.where.not(id: sis_channel_ids).exists?
+
+    if set_bouncing
       show_bouncing_channel_message! unless bouncing_channel_message_dismissed?
     else
       dismiss_bouncing_channel_message!
@@ -3081,14 +3092,6 @@ class User < ActiveRecord::Base
       break unless ObserverPairingCode.active.where(code: code).exists?
     end
     observer_pairing_codes.create(expires_at: 7.days.from_now, code: code)
-  end
-
-  def observation_link?(student, root_account = nil)
-    return true if self.id == student.id
-
-    scope = self.as_observer_observation_links.where(student: student)
-    scope = scope.for_root_accounts(root_account) if root_account
-    scope.any?
   end
 
   def pronouns

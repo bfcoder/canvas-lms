@@ -69,6 +69,7 @@ class Assignment < ActiveRecord::Base
   restrict_columns :state, [:workflow_state]
 
   attribute :lti_resource_link_custom_params, :string, default: nil
+  attribute :lti_resource_link_lookup_uuid, :string, default: nil
 
   has_many :submissions, -> { active.preload(:grading_period) }, inverse_of: :assignment
   has_many :all_submissions, class_name: 'Submission', dependent: :delete_all
@@ -1111,9 +1112,17 @@ class Assignment < ActiveRecord::Base
       end
 
       if lti_1_3_external_tool_tag? && !lti_resource_links.empty?
-        return if primary_resource_link.custom == lti_resource_link_custom_params_as_hash
+        options = {}
 
-        primary_resource_link.update!(custom: lti_resource_link_custom_params_as_hash)
+        unless primary_resource_link.custom == lti_resource_link_custom_params_as_hash
+          options[:custom] = lti_resource_link_custom_params_as_hash
+        end
+
+        options[:lookup_uuid] = lti_resource_link_lookup_uuid unless lti_resource_link_lookup_uuid.nil?
+
+        return if options.empty?
+
+        primary_resource_link.update!(options)
       end
     end
   end
@@ -2130,7 +2139,7 @@ class Assignment < ActiveRecord::Base
     body url submission_type media_comment_id media_comment_type submitted_at
   ].freeze
   ALLOWABLE_SUBMIT_HOMEWORK_OPTS = (SUBMIT_HOMEWORK_ATTRS +
-                                    %w[comment group_comment attachments require_submission_type_is_valid]).to_set
+                                    %w[comment group_comment attachments require_submission_type_is_valid resource_link_lookup_uuid]).to_set
 
   def submit_homework(original_student, opts={})
     eula_timestamp = opts[:eula_agreement_timestamp]
@@ -2140,6 +2149,7 @@ class Assignment < ActiveRecord::Base
       opts.delete(k) unless ALLOWABLE_SUBMIT_HOMEWORK_OPTS.include?(k.to_s)
     }
     raise "Student Required" unless original_student
+
     comment = opts.delete(:comment)
     group_comment = opts.delete(:group_comment)
     group, students = group_students(original_student)
@@ -2177,6 +2187,7 @@ class Assignment < ActiveRecord::Base
         homework.submitted_at = opts[:submitted_at] || Time.zone.now
         homework.lti_user_id = Lti::Asset.opaque_identifier_for(student)
         homework.turnitin_data[:eula_agreement_timestamp] = eula_timestamp if eula_timestamp.present?
+        homework.resource_link_lookup_uuid = opts[:resource_link_lookup_uuid]
         homework.with_versioning(:explicit => (homework.submission_type != "discussion_topic")) do
           if group
             Submission.suspend_callbacks(:delete_submission_drafts!) do
@@ -3249,6 +3260,7 @@ class Assignment < ActiveRecord::Base
   end
 
   def quiz_lti!
+    setup_valid_quiz_lti_settings!
     tool = context.present? && context.quiz_lti_tool
     return unless tool
     self.submission_types = 'external_tool'
@@ -3590,29 +3602,11 @@ class Assignment < ActiveRecord::Base
     # grading periods that have closed within a somewhat larger interval to
     # avoid "missing" a given period if the periodic job doesn't run for a while.
     now = Time.zone.now
-    newly_closed_grading_periods = GradingPeriod.active.joins(:grading_period_group).
-      where(close_date: 20.minutes.ago(now)..now).
-      where(grading_period_groups: {root_account: eligible_root_accounts})
-    return unless newly_closed_grading_periods.any?
-
-    earliest_start_date = newly_closed_grading_periods.pluck(:start_date).min
-    latest_end_date = newly_closed_grading_periods.pluck(:end_date).max
-    eligible_courses = Course.where(root_account: eligible_root_accounts)
-
-    due_at_range = earliest_start_date..latest_end_date
-    Assignment.find_ids_in_ranges do |min_id, max_id|
-      possible_assignments_scope = Assignment.active.
-        where(id: min_id..max_id, course: eligible_courses, post_to_sis: true)
-
-      assignment_ids_to_update = possible_assignments_scope.
-        where(due_at: due_at_range).
-        union(possible_assignments_scope.where("EXISTS (?)",
-          AssignmentOverride.active.
-            where("assignment_id = assignments.id").
-            where(set_type: "CourseSection", due_at_overridden: true, due_at: due_at_range))).
-        select(:id)
-
-      Assignment.where(id: assignment_ids_to_update).update_all(post_to_sis: false, updated_at: Time.zone.now)
+    look_back = Setting.get('disable_post_to_sis_on_grading_period', '60').to_i
+    GradingPeriod.active.joins(:grading_period_group).
+      where(close_date: look_back.minutes.ago(now)..now).
+      where(grading_period_groups: {root_account: eligible_root_accounts}).find_each do |gp|
+      gp.delay(singleton: "disable_post_to_sis_on_grading_period_#{gp.global_id}").disable_post_to_sis
     end
   end
 
@@ -3625,6 +3619,10 @@ class Assignment < ActiveRecord::Base
 
   def active_rubric_association?
     !!self.rubric_association&.active?
+  end
+
+  def can_reassign?(grader)
+    (final_grader_id.nil? || final_grader_id == grader.id) && context.grants_right?(grader, :manage_grades)
   end
 
   private
@@ -3768,5 +3766,15 @@ class Assignment < ActiveRecord::Base
 
   def set_root_account_id
     self.root_account_id = root_account&.id
+  end
+
+  def setup_valid_quiz_lti_settings!
+    self.peer_reviews = false
+    self.peer_review_count = 0
+    self.peer_reviews_due_at = nil
+    self.peer_reviews_assigned = false
+    self.automatic_peer_reviews = false
+    self.anonymous_peer_reviews = false
+    self.intra_group_peer_reviews = false
   end
 end

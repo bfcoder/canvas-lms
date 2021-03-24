@@ -423,7 +423,7 @@ class AccountsController < ApplicationController
       @accounts = PaginatedCollection.build do |pager|
         per_page = pager.per_page
         current_page = [pager.current_page.to_i, 1].max
-        sub_accounts = @account.sub_accounts_recursive(per_page + 1, (current_page - 1) * per_page)
+        sub_accounts = Account.active.offset((current_page - 1) * per_page).limit(per_page + 1).sub_accounts_recursive(@account.id)
 
         if sub_accounts.length > per_page
           sub_accounts.pop
@@ -1017,6 +1017,20 @@ class AccountsController < ApplicationController
         remove_ip_filters = params[:account].delete(:remove_ip_filters)
         params[:account][:ip_filters] = [] if remove_ip_filters
 
+        k5_settings = params.dig(:account, :settings, :enable_as_k5_account)
+        unless k5_settings.nil?
+          enable_as_k5 = value_to_boolean(k5_settings[:value])
+          # Lock enable_as_k5_account as ON down the inheritance chain once an account enables it
+          # This is important in determining whether k5 mode dashboard is shown to a user
+          params[:account][:settings][:enable_as_k5_account][:locked] = enable_as_k5
+          # Add subaccount ids with k5 mode enabled to the root account's setting k5_accounts
+          k5_accounts = @account.root_account.settings[:k5_accounts] || []
+          k5_accounts = Set.new(k5_accounts)
+          enable_as_k5 ? k5_accounts.add(@account.id) : k5_accounts.delete(@account.id)
+          @account.root_account.settings[:k5_accounts] = k5_accounts.to_a
+          @account.root_account.save!
+        end
+
         # Set default Dashboard view
         set_default_dashboard_view(params.dig(:account, :settings)&.delete(:default_dashboard_view))
 
@@ -1272,7 +1286,7 @@ class AccountsController < ApplicationController
       @items = @account.report_snapshots.progressive.last.try(:report_value_over_time, params[:attribute])
       respond_to do |format|
         format.json { render :json => @items }
-        format.csv {
+        format.csv do
           res = CSV.generate do |csv|
             csv << ['Timestamp', 'Value']
             @items.each do |item|
@@ -1280,20 +1294,25 @@ class AccountsController < ApplicationController
             end
           end
           cancel_cache_buster
-          # TODO i18n
+          # TODO: i18n
           send_data(
             res,
             :type => "text/csv",
             :filename => "#{params[:attribute].titleize} Report for #{@account.name}.csv",
             :disposition => "attachment"
           )
-        }
+        end
       end
     end
   end
 
   def avatars
-    if authorized_action(@account, @current_user, :manage_admin_users)
+    # multi-line ternary is not ideal, but is a clean solution for temp granular check
+    is_authorized = @domain_root_account.feature_enabled?(:granular_permissions_manage_users) ?
+      authorized_action(@account, @current_user, :allow_course_admin_actions) :
+      authorized_action(@account, @current_user, :manage_admin_users)
+
+    if is_authorized
       @users = @account.all_users(nil)
       @avatar_counts = {
         :all => format_avatar_count(@users.with_avatar_state('any').count),
@@ -1304,14 +1323,12 @@ class AccountsController < ApplicationController
       if params[:avatar_state]
         @users = @users.with_avatar_state(params[:avatar_state])
         @avatar_state = params[:avatar_state]
+      elsif @domain_root_account && @domain_root_account.settings[:avatars] == 'enabled_pending'
+        @users = @users.with_avatar_state('submitted')
+        @avatar_state = 'submitted'
       else
-        if @domain_root_account && @domain_root_account.settings[:avatars] == 'enabled_pending'
-          @users = @users.with_avatar_state('submitted')
-          @avatar_state = 'submitted'
-        else
-          @users = @users.with_avatar_state('reported')
-          @avatar_state = 'reported'
-        end
+        @users = @users.with_avatar_state('reported')
+        @avatar_state = 'reported'
       end
       @users = Api.paginate(@users, self, account_avatars_url)
     end
@@ -1320,6 +1337,7 @@ class AccountsController < ApplicationController
   def sis_import
     if authorized_action(@account, @current_user, [:import_sis, :manage_sis])
       return redirect_to account_settings_url(@account) if !@account.allow_sis_import || !@account.root_account?
+
       @current_batch = @account.current_sis_batch
       @last_batch = @account.sis_batches.order('created_at DESC').first
       @terms = @account.enrollment_terms.active
@@ -1336,9 +1354,9 @@ class AccountsController < ApplicationController
 
   def course_user_search
     return unless authorized_action(@account, @current_user, :read)
+
     can_read_course_list = @account.grants_right?(@current_user, session, :read_course_list)
     can_read_roster = @account.grants_right?(@current_user, session, :read_roster)
-    can_manage_account = @account.grants_right?(@current_user, session, :manage_account_settings)
 
     unless can_read_course_list || can_read_roster
       if @redirect_on_unauth
@@ -1355,6 +1373,23 @@ class AccountsController < ApplicationController
     css_bundle :addpeople
     @page_title = @account.name
     add_crumb '', '?' # the text for this will be set by javascript
+    js_permissions = {
+      can_read_course_list: can_read_course_list,
+      can_read_roster: can_read_roster,
+      can_create_courses: @account.grants_right?(@current_user, session, :manage_courses),
+      can_create_users: @account.root_account.grants_right?(@current_user, session, :manage_user_logins),
+      analytics: @account.service_enabled?(:analytics),
+      can_masquerade: @account.grants_right?(@current_user, session, :become_user),
+      can_message_users: @account.grants_right?(@current_user, session, :send_messages),
+      can_edit_users: @account.grants_any_right?(@current_user, session, :manage_user_logins),
+      can_manage_groups: @account.grants_right?(@current_user, session, :manage_groups), # access to view user groups?
+      can_create_enrollments: @account.grants_any_right?(@current_user, session, *add_enrollment_permissions(@account))
+    }
+    if @account.root_account.feature_enabled?(:granular_permissions_manage_users)
+      js_permissions[:can_allow_course_admin_actions] = @account.grants_right?(@current_user, session, :allow_course_admin_actions)
+    else
+      js_permissions[:can_manage_admin_users] = @account.grants_right?(@current_user, session, :manage_admin_users)
+    end
     js_env({
              ROOT_ACCOUNT_NAME: @account.root_account.name, # used in AddPeopleApp modal
              ACCOUNT_ID: @account.id,
@@ -1362,19 +1397,7 @@ class AccountsController < ApplicationController
              customized_login_handle_name: @account.root_account.customized_login_handle_name,
              delegated_authentication: @account.root_account.delegated_authentication?,
              SHOW_SIS_ID_IN_NEW_USER_FORM: @account.root_account.allow_sis_import && @account.root_account.grants_right?(@current_user, session, :manage_sis),
-             PERMISSIONS: {
-               can_read_course_list: can_read_course_list,
-               can_read_roster: can_read_roster,
-               can_create_courses: @account.grants_right?(@current_user, session, :manage_courses),
-               can_create_enrollments: @account.grants_any_right?(@current_user, session, :manage_students, :manage_admin_users),
-               can_create_users: @account.root_account.grants_right?(@current_user, session, :manage_user_logins),
-               analytics: @account.service_enabled?(:analytics),
-               can_masquerade: @account.grants_right?(@current_user, session, :become_user),
-               can_message_users: @account.grants_right?(@current_user, session, :send_messages),
-               can_edit_users: @account.grants_any_right?(@current_user, session, :manage_user_logins),
-               can_manage_groups: @account.grants_right?(@current_user, session, :manage_groups),           # access to view user groups?
-               can_manage_admin_users: @account.grants_right?(@current_user, session, :manage_admin_users)  # access to manage user avatars page?
-             }
+             PERMISSIONS: js_permissions
            })
     render html: '', layout: true
   end
@@ -1385,8 +1408,8 @@ class AccountsController < ApplicationController
       @account ||= @context
       return course_user_search
     end
-
     return unless authorized_action(@context, @current_user, :read_roster)
+
     @root_account = @context.root_account
     @query = params[:term]
     GuardRail.activate(:secondary) do
@@ -1562,9 +1585,11 @@ class AccountsController < ApplicationController
                                    :strict_sis_check, :storage_quota, :students_can_create_courses,
                                    :sub_account_includes, :teachers_can_create_courses, :trusted_referers,
                                    :turnitin_host, :turnitin_account_id, :users_can_edit_name,
-                                   {:usage_rights_required => [:value, :locked] }.freeze,
+                                   {:usage_rights_required => [:value, :locked]}.freeze,
                                    :app_center_access_token, :default_dashboard_view, :force_default_dashboard_view,
-                                   :smart_alerts_threshold, :enable_fullstory, :enable_google_analytics].freeze
+                                   :smart_alerts_threshold, :enable_fullstory, :enable_google_analytics,
+                                   {:enable_as_k5_account => [:value, :locked]}.freeze,
+                                   :enable_push_notifications].freeze
 
   def permitted_account_attributes
     [:name, :turnitin_account_id, :turnitin_shared_secret, :include_crosslisted_courses,
@@ -1601,4 +1626,20 @@ class AccountsController < ApplicationController
     }
   end
 
+  def add_enrollment_permissions(context)
+    if context.root_account.feature_enabled?(:granular_permissions_manage_users)
+      [
+        :add_teacher_to_course,
+        :add_ta_to_course,
+        :add_designer_to_course,
+        :add_student_to_course,
+        :add_observer_to_course,
+      ]
+    else
+      [
+        :manage_students,
+        :manage_admin_users
+      ]
+    end
+  end
 end

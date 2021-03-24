@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 - present Instructure, Inc.
+ * Copyright (C) 2021 - present Instructure, Inc.
  *
  * This file is part of Canvas.
  *
@@ -48,9 +48,9 @@ describe('FindOutcomesModal', () => {
 
   const render = (
     children,
-    {contextType = 'Account', contextId = '1', mocks = findModalMocks()} = {}
+    {contextType = 'Account', contextId = '1', mocks = findModalMocks(), renderer = rtlRender} = {}
   ) => {
-    return rtlRender(
+    return renderer(
       <OutcomesContext.Provider value={{env: {contextType, contextId}}}>
         <MockedProvider cache={cache} mocks={mocks}>
           {children}
@@ -62,7 +62,6 @@ describe('FindOutcomesModal', () => {
   it('renders component with "Add Outcomes to Account" title when contextType is Account', async () => {
     const {getByText} = render(<FindOutcomesModal {...defaultProps()} />)
     await act(async () => jest.runAllTimers())
-
     expect(getByText('Add Outcomes to Account')).toBeInTheDocument()
   })
 
@@ -71,14 +70,12 @@ describe('FindOutcomesModal', () => {
       contextType: 'Course'
     })
     await act(async () => jest.runAllTimers())
-
     expect(getByText('Add Outcomes to Course')).toBeInTheDocument()
   })
 
   it('shows modal if open prop true', async () => {
     const {getByText} = render(<FindOutcomesModal {...defaultProps()} />)
     await act(async () => jest.runAllTimers())
-
     expect(getByText('Close')).toBeInTheDocument()
   })
 
@@ -102,6 +99,21 @@ describe('FindOutcomesModal', () => {
     const doneBtn = getByText('Done')
     fireEvent.click(doneBtn)
     expect(onCloseHandlerMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears selected outcome group on modal close', async () => {
+    const {getByText, queryByText, rerender} = render(<FindOutcomesModal {...defaultProps()} />)
+    await act(async () => jest.runAllTimers())
+    fireEvent.click(getByText('Account Standards'))
+    fireEvent.click(getByText('Root Account Outcome Group 0'))
+    await act(async () => jest.runAllTimers())
+    expect(getByText('Add All Outcomes')).toBeInTheDocument()
+    fireEvent.click(getByText('Done'))
+    render(<FindOutcomesModal {...defaultProps({open: false})} />, {renderer: rerender})
+    await act(async () => jest.runAllTimers())
+    render(<FindOutcomesModal {...defaultProps()} />, {renderer: rerender})
+    await act(async () => jest.runAllTimers())
+    expect(queryByText('Add All Outcomes')).not.toBeInTheDocument()
   })
 
   describe('within an account context', () => {

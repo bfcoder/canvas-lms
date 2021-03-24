@@ -17,6 +17,8 @@
  */
 
 import {gql} from 'jsx/canvas-apollo'
+import axios from 'axios'
+import pluralize from 'str/pluralize'
 
 const groupFragment = gql`
   fragment GroupFragment on LearningOutcomeGroup {
@@ -57,3 +59,34 @@ export const CHILD_GROUPS_QUERY = gql`
   }
   ${groupFragment}
 `
+
+export const GROUP_DETAIL_QUERY = gql`
+  query GroupDetailQuery($id: ID!, $outcomesCursor: String) {
+    group: legacyNode(type: LearningOutcomeGroup, _id: $id) {
+      ... on LearningOutcomeGroup {
+        _id
+        description
+        title
+        outcomesCount
+        outcomes(first: 10, after: $outcomesCursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            ... on LearningOutcome {
+              _id
+              description
+              title
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
+export const removeOutcomeGroup = (contextType, contextId, groupId) =>
+  axios.delete(
+    `/api/v1/${pluralize(contextType).toLowerCase()}/${contextId}/outcome_groups/${groupId}`
+  )
